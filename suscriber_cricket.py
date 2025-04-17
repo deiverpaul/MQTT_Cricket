@@ -5,19 +5,29 @@ import os
 import threading
 import signal
 from datetime import datetime
+import math
 
 from openpyxl import Workbook, load_workbook
-
 import paho.mqtt.client as mqtt
 
-# Config
+# Configuración
 BROKER = "192.168.0.101"
 PORT = 1884
 TOPIC = "esp32/sensores/crickethub1"
 DB_FILE = "datos_sensores.db"
 EXCEL_FILE = "mediciones.xlsx"
 
-# DB setup
+# Función para limpiar valores
+def parse_float(value):
+    try:
+        val = float(value)
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return val
+    except:
+        return None
+
+# Base de datos
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -35,7 +45,7 @@ CREATE TABLE IF NOT EXISTS mediciones (
 """)
 conn.commit()
 
-# Excel setup
+# Excel
 if not os.path.exists(EXCEL_FILE):
     wb = Workbook()
     ws = wb.active
@@ -43,7 +53,7 @@ if not os.path.exists(EXCEL_FILE):
     ws.append(["timestamp", "accel_x", "accel_y", "accel_z", "lux", "temp", "humidity", "co2"])
     wb.save(EXCEL_FILE)
 
-# MQTT callbacks
+# MQTT Callbacks
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("✅ Conectado al broker MQTT")
@@ -54,19 +64,23 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
+
         fila = (
-            payload["timestamp"],
-            float(payload.get("accel_x", 0)),
-            float(payload.get("accel_y", 0)),
-            float(payload.get("accel_z", 0)),
-            float(payload.get("lux", 0)),
-            float(payload.get("temp", 0)),
-            float(payload.get("humidity", 0)),
-            float(payload.get("co2", 0)),
+            payload.get("timestamp"),
+            parse_float(payload.get("accel_x")),
+            parse_float(payload.get("accel_y")),
+            parse_float(payload.get("accel_z")),
+            parse_float(payload.get("lux")),
+            parse_float(payload.get("temp")),
+            parse_float(payload.get("humidity")),
+            parse_float(payload.get("co2")),
         )
 
         # Guardar en DB
-        cursor.execute("INSERT INTO mediciones (timestamp, accel_x, accel_y, accel_z, lux, temp, humidity, co2) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", fila)
+        cursor.execute("""
+        INSERT INTO mediciones (timestamp, accel_x, accel_y, accel_z, lux, temp, humidity, co2)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, fila)
         conn.commit()
 
         # Guardar en Excel
@@ -75,13 +89,13 @@ def on_message(client, userdata, msg):
         ws.append(fila)
         wb.save(EXCEL_FILE)
 
-        print("📥 Datos recibidos y almacenados:")
+        print("📥 Datos almacenados:")
         print(json.dumps(payload, indent=2))
 
     except Exception as e:
         print(f"⚠️ Error procesando mensaje: {e}")
 
-# MQTT thread
+# MQTT Worker
 def mqtt_thread_func():
     client = mqtt.Client()
     client.on_connect = on_connect
